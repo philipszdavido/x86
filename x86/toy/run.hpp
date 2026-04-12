@@ -13,6 +13,8 @@
 #include <iostream>
 #include <vector>
 #include <cstdint>
+#include <queue>
+
 using namespace std;
 
 /* ===================== FLAGS ===================== */
@@ -83,9 +85,43 @@ struct Instruction {
     uint8_t imm;
 };
 
+/* ===================== PIC =====================*/
+struct PIC {
+    queue<uint8_t> irqs;
+
+    void raise(uint8_t irq) {
+        irqs.push(irq);
+    }
+
+    int next() {
+        if (irqs.empty()) return -1;
+        int v = irqs.front();
+        irqs.pop();
+        return v;
+    }
+};
+
+struct Process {
+    uint8_t R[4];
+    uint8_t ACC;
+    uint8_t PC;
+    uint8_t SP;
+};
+
 /* ===================== CPU ===================== */
 class CPU {
 public:
+    uint8_t SP = 0xFF;              // Stack Pointer
+    uint8_t IDT[256] = {0};        // Interrupt Vector Table
+    bool interruptEnabled = true;
+
+    int cycles = 0;                // clock cycles
+
+    // Forward declare PIC (we'll define it soon)
+    struct PIC* pic = nullptr;
+    vector<Process> processes;
+    int currentProcess = 0;
+    
     uint8_t R[4] = {0};   // General registers
     uint8_t ACC = 0;      // Accumulator
     uint8_t PC = 0;       // Program Counter
@@ -178,6 +214,15 @@ public:
     /* -------- RUN -------- */
     void run() {
         while (running) {
+            
+            tick(); // clock
+            
+            // check interrupts
+            int irq = pic->next();
+            if (irq != -1) {
+                triggerInterrupt(irq);
+            }
+            
             fetch();
             Instruction inst = decode();
             execute(inst);
@@ -193,6 +238,49 @@ public:
         cout << "ACC:" << (int)ACC;
         cout << " | Z:" << flags.Z << " C:" << flags.C
              << " N:" << flags.N << " O:" << flags.O << endl;
+    }
+    
+    void triggerInterrupt(uint8_t intNo) {
+        if (!interruptEnabled) return;
+
+        // push PC to stack
+        ram.write(SP--, PC);
+
+        // jump to handler
+        PC = IDT[intNo];
+    }
+    
+    void tick() {
+        cycles++;
+
+        // fire timer interrupt every 5 instructions
+        if (cycles % 5 == 0) {
+            pic->raise(0x20); // timer IRQ
+        }
+    }
+    
+    void saveProcess() {
+        auto &p = processes[currentProcess];
+        for (int i = 0; i < 4; i++) p.R[i] = R[i];
+        p.ACC = ACC;
+        p.PC = PC;
+        p.SP = SP;
+    }
+
+    void loadProcess() {
+        auto &p = processes[currentProcess];
+        for (int i = 0; i < 4; i++) R[i] = p.R[i];
+        ACC = p.ACC;
+        PC = p.PC;
+        SP = p.SP;
+    }
+
+    void scheduleNext() {
+        saveProcess();
+
+        currentProcess = (currentProcess + 1) % processes.size();
+
+        loadProcess();
     }
 };
 
